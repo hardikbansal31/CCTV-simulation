@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Live Hazard Detection Stream</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #111;
+        color: #eee;
+        margin: 0;
+        text-align: center;
+        padding: 20px;
+      }
+      video {
+        width: 100%;
+        max-width: 800px;
+        background: black;
+        border-radius: 8px;
+      }
+      button {
+        margin-top: 10px;
+        padding: 10px 20px;
+        font-size: 16px;
+      }
+      .status {
+        margin-top: 10px;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Live Hazard Detection</h1>
+    <video id="video" autoplay playsinline muted></video>
+    <div class="status" id="status">Idle</div>
+    <button id="recordButton">Start Recording</button>
+
+    <script>
+      const endpoint = "/ https://29f87a7ca6f0.ngrok-free.app/process-video";
+      const video = document.getElementById("video");
+      const recordButton = document.getElementById("recordButton");
+      const statusEl = document.getElementById("status");
+
+      let stream = null;
+      let recorder = null;
+      let chunks = [];
+      let isRecording = false;
+      let clipMs = 10000; // 10 seconds
+
+      function logStatus(msg) {
+        console.log(msg);
+        statusEl.textContent = msg;
+      }
+
+      async function startStream() {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+        video.srcObject = stream;
+      }
+
+      function getMime() {
+        // Try MP4, fallback if not supported
+        if (MediaRecorder.isTypeSupported("video/mp4")) return "video/mp4";
+        return "video/webm";
+      }
+
+      async function startRecordingLoop() {
+        if (!stream) await startStream();
+        const mimeType = getMime();
+        recorder = new MediaRecorder(stream, { mimeType });
+        chunks = [];
+
+        recorder.ondataavailable = (e) => {
+          if (e.data.size) chunks.push(e.data);
+        };
+
+        recorder.onstop = async () => {
+          const blob = new Blob(chunks, { type: mimeType });
+          chunks = [];
+          logStatus(
+            `Clip recorded (${Math.round(blob.size / 1024)} KB) — sending...`
+          );
+
+          try {
+            const formData = new FormData();
+            formData.append(
+              "file",
+              blob,
+              mimeType === "video/mp4" ? "clip.mp4" : "clip.webm"
+            );
+            await fetch(endpoint, { method: "POST", body: formData });
+            logStatus(`Uploaded ${mimeType.toUpperCase()} clip`);
+          } catch (err) {
+            logStatus("Upload failed: " + err.message);
+          }
+
+          if (isRecording) {
+            recorder.start();
+            setTimeout(() => recorder.stop(), clipMs);
+          }
+        };
+
+        recorder.start();
+        setTimeout(() => recorder.stop(), clipMs);
+      }
+
+      recordButton.addEventListener("click", async () => {
+        if (!isRecording) {
+          isRecording = true;
+          recordButton.textContent = "Stop Recording";
+          await startRecordingLoop();
+          logStatus("Recording started, sending every 10s...");
+        } else {
+          isRecording = false;
+          recordButton.textContent = "Start Recording";
+          if (recorder && recorder.state !== "inactive") recorder.stop();
+          if (stream) {
+            stream.getTracks().forEach((t) => t.stop());
+          }
+          logStatus("Recording stopped");
+        }
+      });
+    </script>
+  </body>
+</html>
