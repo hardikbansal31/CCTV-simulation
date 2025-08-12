@@ -23,10 +23,19 @@
         margin-top: 10px;
         padding: 10px 20px;
         font-size: 16px;
+        background: #444;
+        color: #fff;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #666;
       }
       .status {
         margin-top: 10px;
         font-weight: bold;
+        color: #0f0;
       }
     </style>
   </head>
@@ -37,7 +46,7 @@
     <button id="recordButton">Start Recording</button>
 
     <script>
-      const endpoint = "/ https://29f87a7ca6f0.ngrok-free.app/process-video";
+      const endpoint = "https://29f87a7ca6f0.ngrok-free.app/process-video";
       const video = document.getElementById("video");
       const recordButton = document.getElementById("recordButton");
       const statusEl = document.getElementById("status");
@@ -46,30 +55,43 @@
       let recorder = null;
       let chunks = [];
       let isRecording = false;
-      let clipMs = 10000; // 10 seconds
+      const clipMs = 10000; // 10 seconds
 
-      function logStatus(msg) {
+      function logStatus(msg, isError = false) {
         console.log(msg);
         statusEl.textContent = msg;
+        statusEl.style.color = isError ? "#f33" : "#0f0";
       }
 
       async function startStream() {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
+        try {
+          // Prefer the back camera on phones
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { exact: "environment" }, // forces back camera
+            },
+            audio: false,
+          });
+        } catch (err) {
+          // Fallback to default camera if back camera is not available
+          console.warn("Back camera not available, using default:", err.message);
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        }
         video.srcObject = stream;
       }
 
       function getMime() {
-        // Try MP4, fallback if not supported
         if (MediaRecorder.isTypeSupported("video/mp4")) return "video/mp4";
         return "video/webm";
       }
 
-      async function startRecordingLoop() {
+      async function recordAndUpload() {
         if (!stream) await startStream();
         const mimeType = getMime();
+
         recorder = new MediaRecorder(stream, { mimeType });
         chunks = [];
 
@@ -78,25 +100,21 @@
         };
 
         recorder.onstop = async () => {
+          if (!isRecording) return;
           const blob = new Blob(chunks, { type: mimeType });
           chunks = [];
-          logStatus(
-            `Clip recorded (${Math.round(blob.size / 1024)} KB) — sending...`
-          );
+          logStatus(`Clip (${Math.round(blob.size / 1024)} KB) — uploading...`);
 
           try {
             const formData = new FormData();
-            formData.append(
-              "file",
-              blob,
-              mimeType === "video/mp4" ? "clip.mp4" : "clip.webm"
-            );
+            formData.append("file", blob, mimeType === "video/mp4" ? "clip.mp4" : "clip.webm");
             await fetch(endpoint, { method: "POST", body: formData });
             logStatus(`Uploaded ${mimeType.toUpperCase()} clip`);
           } catch (err) {
-            logStatus("Upload failed: " + err.message);
+            logStatus("Upload failed: " + err.message, true);
           }
 
+          // Continue recording if still active
           if (isRecording) {
             recorder.start();
             setTimeout(() => recorder.stop(), clipMs);
@@ -111,14 +129,15 @@
         if (!isRecording) {
           isRecording = true;
           recordButton.textContent = "Stop Recording";
-          await startRecordingLoop();
-          logStatus("Recording started, sending every 10s...");
+          logStatus("Recording started — sending every 10s...");
+          await recordAndUpload();
         } else {
           isRecording = false;
           recordButton.textContent = "Start Recording";
           if (recorder && recorder.state !== "inactive") recorder.stop();
           if (stream) {
             stream.getTracks().forEach((t) => t.stop());
+            stream = null;
           }
           logStatus("Recording stopped");
         }
